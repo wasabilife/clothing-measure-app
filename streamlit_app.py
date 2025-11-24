@@ -1,14 +1,12 @@
-# streamlit_app.py
 import streamlit as st
 from PIL import Image
 import numpy as np
-import cv2 
+import cv2
 from scipy.spatial import distance as dist
-import utils  # ← utils.pyから関数をインポート
+import utils  # utils.pyから関数をインポート
 
 # A3用紙の既知の寸法（例: 短辺）をセンチメートルで定義
-# 基準オブジェクトの既知の長さとして利用します
-KNOWN_WIDTH_CM = 29.7 
+KNOWN_WIDTH_CM = 29.7
 
 # =======================================================
 # 📏 【採寸ロジック関数】 A3用紙を基準に計算する
@@ -50,50 +48,43 @@ def measure_clothing(image_np, known_width):
         raise Exception("A3画用紙（4つの角を持つ物体）を検出できませんでした。撮影環境を確認してください。")
 
     # 4. パースペクティブ補正のための処理
-    # 検出した4つの角を utils.py の関数で順序付け (左上、右上、右下、左下の順)
     pts = paper_contour.reshape(4, 2)
     rect = utils.order_points(pts) 
-    (tl, tr, br, bl) = rect # 座標を変数に展開
+    (tl, tr, br, bl) = rect
 
-    # 補正後の画像の理想的なサイズを決定（A3の比率 420:297 を維持）
-    # A3の短辺29.7cmを基準に、420/297の比率で長辺を計算
     ratio_a3 = 420.0 / 297.0 
-    W_ideal = 1000  # 補正後の画像幅の仮設定（任意のピクセル数）
+    W_ideal = 1000  # 補正後の画像幅の仮設定
     H_ideal = int(W_ideal * ratio_a3)
 
     # 5. ワープ変換（パースペクティブ補正）
-    # 補正後のターゲット座標 (理想的な長方形)
     dst = np.array([
         [0, 0],
         [W_ideal - 1, 0],
         [W_ideal - 1, H_ideal - 1],
         [0, H_ideal - 1]], dtype="float32")
 
-    # 変換行列を取得し、画像をワープ変換
     M = cv2.getPerspectiveTransform(rect, dst)
     warped = cv2.warpPerspective(image_np, M, (W_ideal, H_ideal))
     
     # 6. Pixels Per Metric の計算
-    # 補正後の短辺のピクセル数 (W_ideal) と実際の長さ (KNOWN_WIDTH_CM = 29.7cm) から計算
     pixels_per_metric = W_ideal / known_width 
     
-   # =======================================================
+    # =======================================================
     # 7. 服の寸法計測（バウンディングボックスによる簡易計測）
     # =======================================================
     
-    # 補正後の画像をグレースケールにし、服を際立たせる
     warped_gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
     
-    # 閾値処理：A3の白と服の黒を分離する (ここではしきい値100を使用。色によって調整が必要)
+    # 閾値処理: 服の輪郭検出の鍵となる部分。100から80に下げて、暗い服の検出を試みる
     # THRESH_BINARY_INV で、服の部分が白 (255) になるように反転させる
-    _, thresh = cv2.threshold(warped_gray, 100, 255, cv2.THRESH_BINARY_INV) 
+    _, thresh = cv2.threshold(warped_gray, 80, 255, cv2.THRESH_BINARY_INV) 
 
     # 再度輪郭を検出
     cnts, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     if not cnts:
         # 服の輪郭が見つからない場合のエラー
-        raise Exception("補正後の画像から服の輪郭を検出できませんでした。服が白すぎるか、A3用紙とのコントラストが不足しています。")
+        raise Exception("補正後の画像から服の輪郭を検出できませんでした。閾値(80)を調整するか、撮影環境を見直してください。")
 
     # 最大の輪郭（服）を抽出
     c = max(cnts, key=cv2.contourArea)
@@ -110,8 +101,8 @@ def measure_clothing(image_np, known_width):
         "**着丈 (推定)**": length_cm,
         "**身幅 (推定)**": width_cm,
         "備考": "計測は服の外枠（バウンディングボックス）に基づいています。",
-        "debug_image": thresh,  # ← デバッグ用の閾値画像を辞書に追加
-        "pixels_per_metric": pixels_per_metric # ← デバッグ用の値も追加
+        "debug_image": thresh,  # デバッグ用の閾値画像を辞書に追加
+        "pixels_per_metric": pixels_per_metric # デバッグ用の値も追加
     }
     
 # =======================================================
@@ -124,6 +115,7 @@ st.subheader('服をA3画用紙に置いて撮影した画像をアップロー�
 # ユーザーからのファイルアップロードを許可
 uploaded_file = st.file_uploader("採寸したい服の画像をアップロード", type=['jpg', 'jpeg', 'png'])
 
+image_np = None # 初期化
 if uploaded_file is not None:
     # 画像の表示
     image = Image.open(uploaded_file)
@@ -131,45 +123,61 @@ if uploaded_file is not None:
     
     # PIL ImageをOpenCVが扱えるNumpy配列に変換（BGR形式に変換）
     image_np = np.array(image.convert('RGB')) 
-    # OpenCVはBGR形式を使うため、RGBをBGRに変換する処理を開発時に追加する必要があります
     image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR) 
     
-    # 採寸ボタン
+# 採寸ボタン
 if st.button('採寸開始'):
-    # 処理状況を通知
-    with st.spinner('計測中...画像解析と計算を行っています。'):
-        
-        try:
-            # 採寸ロジックを呼び出す
-            measurements = measure_clothing(image_np, KNOWN_WIDTH_CM)
+    if uploaded_file is None:
+        st.warning("画像をアップロードしてから採寸を開始してください。")
+    elif image_np is None:
+        st.error("画像の読み込みに失敗しました。")
+    else:
+        # 処理状況を通知
+        with st.spinner('計測中...画像解析と計算を行っています。'):
             
-            # 計測成功時の表示ロジック
-            st.success('採寸が完了しました！')
-            st.markdown("### 📐 計測結果 (A3基準)")
+            measurements = {} # measurements を try ブロックの外で初期化
+            try:
+                # 採寸ロジックを呼び出す
+                measurements = measure_clothing(image_np, KNOWN_WIDTH_CM)
+                
+                # 計測成功時の表示ロジック
+                st.success('採寸が完了しました！')
+                st.markdown("### 📐 計測結果 (A3基準)")
 
-            # 結果表示ループ
-            remarks = measurements.get("備考", None)
+                # 結果表示ループ
+                remarks = measurements.get("備考", None)
+                
+                for key, value in measurements.items():
+                    if key == "備考" or key == "debug_image" or key == "pixels_per_metric":
+                        continue
+                    # 数値のみを .1f でフォーマット
+                    st.write(f"* **{key}:** {value:.1f} cm")
+                
+                if remarks:
+                    st.info(remarks)
             
-            for key, value in measurements.items():
-                if key == "備考":
-                    continue
-                st.write(f"* **{key}:** {value:.1f} cm")
+            # 構文エラーを解消するための except ブロックを追加
+            except Exception as e: 
+                # tryブロック内でエラーが発生したら、ここでキャッチする
+                st.error(f"計測中にエラーが発生しました。コードを確認してください: {e}")
+                
+            # デバッグ表示は try/except の「後」に続ける
+            # measurementsがtryブロック外で初期化されているため、ここでは安全
+            debug_img = measurements.get("debug_image", None)
+            debug_ppm = measurements.get("pixels_per_metric", 'N/A')
+
+            if debug_img is not None:
+                st.header("🐛 デバッグ情報")
+                # 閾値画像をそのまま表示
+                # 注意: st.image() はカラー画像 (BGR) とグレースケール/閾値画像 (単チャンネル) で表示方法が変わります。
+                # ここでは閾値画像が単チャンネルなので、自動的にグレースケールとして表示されます。
+                st.image(debug_img, caption="閾値処理後の画像（服が白く表示されているか確認）", use_column_width=True)
+                
+                # Pixels Per Metric の表示を修正 (エラー回避のため)
+                if isinstance(debug_ppm, float):
+                    st.write(f"Pixels Per Metric (1cmあたり): {debug_ppm:.2f} pixels")
+                else:
+                    st.write(f"Pixels Per Metric (1cmあたり): {debug_ppm}")
             
-            if remarks:
-                st.info(remarks)
-        
-        # 🚨 ここで try ブロックを閉じる except を追加 🚨
-        except Exception as e: 
-            # tryブロック内でエラーが発生したら、ここでキャッチする
-            st.error(f"計測中にエラーが発生しました。コードを確認してください: {e}")
-            
-        # 🚨 デバッグ表示は try/except の「後」に続ける 🚨
-        # try/except と同じインデントレベル (レベル 3) に戻す
-        debug_img = measurements.get("debug_image", None)
-        if debug_img is not None:
-            st.header("🐛 デバッグ情報")
-            st.image(debug_img, caption="閾値処理後の画像（服が白く表示されているか確認）", use_column_width=True)
-            st.write(f"Pixels Per Metric (1cmあたり): {measurements.get('pixels_per_metric', 'N/A'):.2f} pixels")
-            
-# st.info(...) は if ブロックの外側 (レベル 1) にある
+# st.info(...) は if ブロックの外側にある
 st.info('※このアプリは、A3画用紙の既知の寸法を基準としています。')
