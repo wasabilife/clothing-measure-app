@@ -133,36 +133,44 @@ if uploaded_file is not None:
     image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR) 
     
     # 採寸ボタン
-    if st.button('採寸開始'):
-        # 処理状況を通知
-        with st.spinner('計測中...画像解析と計算を行っています。'):
+if st.button('採寸開始'):
+    # 処理状況を通知
+    with st.spinner('計測中...画像解析と計算を行っています。'):
+        
+        try:
+            # 採寸ロジックを呼び出す
+            measurements = measure_clothing(image_np, KNOWN_WIDTH_CM)
             
-            try:
-                # 採寸ロジックを呼び出す
-                measurements = measure_clothing(image_np, KNOWN_WIDTH_CM)
-                
-                st.success('採寸が完了しました！')
-                
-                # 結果を表示
-                st.markdown("### 📐 計測結果 (A3基準)")
+            st.success('採寸が完了しました！')
+            
+            # 結果を表示
+            st.markdown("### 📐 計測結果 (A3基準)")
 
-                # 備考を格納するための変数を用意 (存在すれば)
-                remarks = measurements.get("備考", None)
+            # 備考を格納するための変数を用意 (存在すれば)
+            remarks = measurements.get("備考", None)
+            
+            for key, value in measurements.items():
+                # '備考'キーは数値フォーマットの対象外とする
+                if key == "備考":
+                    continue
                 
-                for key, value in measurements.items():
-                    # '備考'キーは数値フォーマットの対象外とする
-                    if key == "備考":
-                        continue
-                    
-                    # ここで数値のみを .1f でフォーマット
-                    st.write(f"* **{key}:** {value:.1f} cm")
-                
-                # 備考があれば別途表示する
-                if remarks:
-                    st.info(remarks)
+                # ここで数値のみを .1f でフォーマット
+                st.write(f"* **{key}:** {value:.1f} cm")
+            
+            # 備考があれば別途表示する
+            if remarks:
+                st.info(remarks)
+        
+        # 🚨 ここに except ブロックを追加します 🚨
+        except Exception as e:
+            # エラーが発生した場合の表示
+            st.error(f"計測中にエラーが発生しました。コードを確認してください: {e}")
+            
+# st.info('※このアプリは、A3画用紙の既知の寸法を基準としています。') は if ブロックの外側にあります
 # 注意書き
 
 st.info('※このアプリは、A3画用紙の既知の寸法を基準としています。')
+
 
 
 
