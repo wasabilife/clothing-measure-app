@@ -3,10 +3,7 @@ import numpy as np
 import cv2
 import json
 
-# デバッグ情報を格納するための辞書
-debug_info = {}
-
-# --- ユーティリティ関数 ---
+# --- ユーティリティ関数（変更なし） ---
 
 # 画像をリサイズし、アスペクト比を維持
 def resize_image(image, max_width=800):
@@ -31,7 +28,6 @@ def four_point_transform(image, pts, target_width, target_height):
 
 # 測定ロジック
 def measure_clothing(measurement_points, target_width, target_height, paper_width_cm, paper_height_cm):
-    
     # 補正後の画像サイズ（ピクセル）
     x_px = measurement_points[:, 0]
     y_px = measurement_points[:, 1]
@@ -40,16 +36,13 @@ def measure_clothing(measurement_points, target_width, target_height, paper_widt
     pixels_per_cm_x = target_width / paper_width_cm
     pixels_per_cm_y = target_height / paper_height_cm
     
-    # 着丈 (Y軸の最大値と最小値の差)
-    # ユーザーが指定した着丈の始まり(0)と終わり(1)
+    # 着丈 (Y軸の最大値と最小値の差) - ユーザーが指定した着丈の始まり(0)と終わり(1)
     height_px = abs(y_px[1] - y_px[0])
     
-    # 身幅 (X軸の最大値と最小値の差)
-    # ユーザーが指定した身幅の始まり(2)と終わり(3)
+    # 身幅 (X軸の最大値と最小値の差) - ユーザーが指定した身幅の始まり(2)と終わり(3)
     width_px = abs(x_px[3] - x_px[2])
     
     # 実際の服の寸法を計算
-    # 縦方向の計測にはyのスケール、横方向の計測にはxのスケールを使用
     height_cm = height_px / pixels_per_cm_y
     width_cm = width_px / pixels_per_cm_x
     
@@ -61,26 +54,143 @@ def measure_clothing(measurement_points, target_width, target_height, paper_widt
 PAPER_HEIGHT_CM = 51.0
 PAPER_WIDTH_CM = 38.0
 
-# 補正後のターゲットサイズをピクセルで定義（アスペクト比を維持）
+# 補正後のターゲットサイズをピクセルで定義
 TARGET_WIDTH = 800
 TARGET_HEIGHT = int(TARGET_WIDTH * (PAPER_HEIGHT_CM / PAPER_WIDTH_CM))
 
 def init_session_state():
+    # アプリのステップ (1: 紙の角指定, 2: 採寸点指定, 3: 結果表示)
     if 'step' not in st.session_state:
         st.session_state.step = 1
+    # 現在編集中のポイントのインデックス
+    if 'active_point_index' not in st.session_state:
+        st.session_state.active_point_index = 0
+    
+    # 画像データ
     if 'processed_image' not in st.session_state:
         st.session_state.processed_image = None
     if 'original_image' not in st.session_state:
         st.session_state.original_image = None
+        
+    # 座標データ [左上, 右上, 右下, 左下]
     if 'paper_coords' not in st.session_state:
-        st.session_state.paper_coords = [None] * 4 # [左上, 右上, 右下, 左下]
+        st.session_state.paper_coords = [None] * 4 
+    # 採寸データ [着丈上, 着丈下, 身幅左, 身幅右]
     if 'measure_coords' not in st.session_state:
-        st.session_state.measure_coords = [None] * 4 # [着丈上, 着丈下, 身幅左, 身幅右]
+        st.session_state.measure_coords = [None] * 4 
+
+# ポイントの入力を処理し、次のポイントへ進める
+def handle_coordinate_input(coords_list_key, point_index, x_val, y_val, next_step_label):
+    # 現在のポイントを保存
+    st.session_state[coords_list_key][point_index] = (x_val, y_val)
+    
+    # 次のポイントへ進む、または次のステップへ移行
+    if point_index < len(st.session_state[coords_list_key]) - 1:
+        st.session_state.active_point_index += 1
+    else:
+        st.session_state.active_point_index = 0
+        st.session_state.step += 1
+    
+    st.experimental_rerun()
+
+# 座標入力UIの共通ロジック
+def coordinate_input_ui(image, coords_list_key, labels, is_original_image):
+    
+    # 画像の表示（座標確認用）
+    st.image(image, channels="BGR", caption=f"【現在編集中の画像】 サイズ: {image.shape[1]} x {image.shape[0]}", use_column_width=True)
+
+    # 現在の座標リストのコピーを作成し、Noneを(0, 0)に初期化
+    current_coords = [
+        (0, 0) if coord is None else coord 
+        for coord in st.session_state[coords_list_key]
+    ]
+
+    # --- 1. 選択中のポイントをラジオボタンで表示（視覚的フィードバック） ---
+    
+    # ラジオボタンの選択肢（Noneを許容しないため、indexで処理）
+    point_options = list(range(len(labels)))
+    st.session_state.active_point_index = st.radio(
+        "💡 現在、設定したいポイントを選択してください:",
+        point_options,
+        index=st.session_state.active_point_index,
+        format_func=lambda i: f"【{i+1}】 {labels[i]}",
+        key=f'{coords_list_key}_active_point'
+    )
+    
+    active_index = st.session_state.active_point_index
+    active_label = labels[active_index]
+    
+    st.markdown("---")
+    
+    # --- 2. 選択中のポイントの入力欄だけをハイライト表示 ---
+    
+    st.subheader(f"✨ 設定中: {active_label} の座標")
+    
+    # 現在の値を取得 (設定済みの値、または初期値)
+    initial_x, initial_y = current_coords[active_index]
+    
+    col_x, col_y = st.columns(2)
+    
+    with col_x:
+        x_val = st.number_input(
+            f"X座標 (0-{image.shape[1]}): {active_label}",
+            min_value=0,
+            max_value=image.shape[1],
+            value=initial_x,
+            key=f'{coords_list_key}_x_{active_index}'
+        )
+    with col_y:
+        y_val = st.number_input(
+            f"Y座標 (0-{image.shape[0]}): {active_label}",
+            min_value=0,
+            max_value=image.shape[0],
+            value=initial_y,
+            key=f'{coords_list_key}_y_{active_index}'
+        )
+
+    st.markdown("---")
+
+    # --- 3. 確定ボタン（クリックで次のポイントへ移動） ---
+    
+    if st.button(f"✅ {active_label} 座標を確定し、次のポイントへ", key=f'{coords_list_key}_confirm_btn'):
+        handle_coordinate_input(
+            coords_list_key, active_index, x_val, y_val, active_label
+        )
+    
+    # 全てのポイントが設定済みか確認
+    if all(coord is not None for coord in st.session_state[coords_list_key]):
+        # 次のステップへ進むためのボタン
+        st.success("全てのポイントが設定されました！")
+        if st.button("次のステップへ進む", key=f'{coords_list_key}_next_step_btn'):
+            if is_original_image:
+                # ステップ1から2への移行（補正処理が必要）
+                st.session_state.step = 2 
+            else:
+                # ステップ2から3への移行
+                st.session_state.step = 3
+            st.experimental_rerun()
+            
+    # 設定済みのポイントをマークしたデバッグ画像を準備
+    display_debug_image(image, st.session_state[coords_list_key], labels)
+
+def display_debug_image(image, coords_list, labels):
+    if all(coord is not None for coord in coords_list):
+        debug_image = image.copy()
+        for i, (x, y) in enumerate(coords_list):
+            x_int, y_int = int(x), int(y)
+            # 現在アクティブなポイントを黄色で強調
+            color = (0, 255, 255) if i == st.session_state.active_point_index else (0, 0, 255) 
+            cv2.circle(debug_image, (x_int, y_int), 15 if i == st.session_state.active_point_index else 5, color, -1)
+            cv2.putText(debug_image, f"{i+1}:{labels[i]}", (x_int + 15, y_int), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        
+        st.subheader("現在の座標マーク（入力した座標を確認）")
+        st.image(debug_image, channels="BGR", caption="設定したポイントを赤い丸で表示", use_column_width=True)
+
 
 def main():
     init_session_state()
 
-    st.title("📐 服のカスタム採寸アプリ")
+    st.title("📐 服のカスタム採寸アプリ (ガイド付き手動入力)")
     st.markdown("---")
     
     # ファイルアップローダー
@@ -90,6 +200,7 @@ def main():
         if st.session_state.original_image is None or st.session_state.uploaded_file_name != uploaded_file.name:
             # 新しいファイルがアップロードされた場合、状態をリセット
             st.session_state.step = 1
+            st.session_state.active_point_index = 0
             st.session_state.uploaded_file_name = uploaded_file.name
             
             file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
@@ -102,100 +213,47 @@ def main():
 
     # --- ステップ 1: 紙の角の指定とパースペクティブ補正 ---
     if st.session_state.step == 1:
-        st.header("ステップ 1: 基準となる紙の4つの角を入力")
+        st.header("ステップ 1/3: 基準となる紙の4つの角を入力")
         st.warning("紙の角の正確な**X, Y座標**を入力してください。座標はPhotoshopなどのツールで確認できます。")
-        st.info(f"アップロードされた画像サイズ: {st.session_state.original_image.shape[1]} x {st.session_state.original_image.shape[0]} (リサイズ後)")
+        st.info(f"紙の寸法: 縦{PAPER_HEIGHT_CM}cm, 横{PAPER_WIDTH_CM}cm")
         
-        st.image(st.session_state.original_image, channels="BGR", caption="元の画像（この画像を参考に座標を入力）", use_column_width=True)
+        # 座標入力UIの呼び出し
+        paper_labels = ["左上", "右上", "右下", "左下"]
+        coordinate_input_ui(st.session_state.original_image, 'paper_coords', paper_labels, is_original_image=True)
 
-        labels = ["左上", "右上", "右下", "左下"]
-        col_x, col_y = st.columns(2)
-        
-        for i, label in enumerate(labels):
-            with col_x if i % 2 == 0 else col_y:
-                # ユーザーが座標を入力するための数値入力フィールド
-                st.subheader(f"{label}の座標")
-                x_val = st.number_input(
-                    f"{label} X座標",
-                    min_value=0,
-                    max_value=st.session_state.original_image.shape[1],
-                    value=st.session_state.paper_coords[i][0] if st.session_state.paper_coords[i] else 0,
-                    key=f'paper_x_{i}'
-                )
-                y_val = st.number_input(
-                    f"{label} Y座標",
-                    min_value=0,
-                    max_value=st.session_state.original_image.shape[0],
-                    value=st.session_state.paper_coords[i][1] if st.session_state.paper_coords[i] else 0,
-                    key=f'paper_y_{i}'
-                )
-                st.session_state.paper_coords[i] = (x_val, y_val)
-
-
-        if st.button("画像を補正し、ステップ2へ進む", key="go_to_step2"):
-            try:
-                # 4点をNumpy配列に変換
-                paper_points = np.array(st.session_state.paper_coords, dtype="float32")
-                
-                # 補正を実行
-                warped_image_bgr, _ = four_point_transform(
-                    st.session_state.original_image, paper_points, TARGET_WIDTH, TARGET_HEIGHT
-                )
-                
-                st.session_state.processed_image = warped_image_bgr
-                st.session_state.step = 2
-                st.experimental_rerun() # ステップ2へ移行
-
-            except Exception as e:
-                st.error(f"パースペクティブ補正に失敗しました。座標入力が間違っている可能性があります: {e}")
-                st.exception(e)
-
-    # --- ステップ 2: 着丈・身幅の採寸点を指定 ---
+    # --- ステップ 2: パースペクティブ補正と採寸点の指定 ---
     elif st.session_state.step == 2:
-        st.header("ステップ 2: 着丈・身幅の計測点を入力")
-        st.info("補正後の画像を見ながら、服の採寸に必要な4点の正確なX, Y座標を入力してください。")
-        st.warning(f"補正後の画像サイズ: {TARGET_WIDTH} x {TARGET_HEIGHT}。座標はこの範囲内で入力してください。")
-        
-        # 補正後の画像を表示
-        st.image(st.session_state.processed_image, channels="BGR", 
-                 caption="補正後の画像（この画像を参考に座標を入力）", use_column_width=True)
+        st.header("ステップ 2/3: 採寸点の入力 (補正後画像)")
 
-        labels = ["着丈 (上端)", "着丈 (下端)", "身幅 (左端)", "身幅 (右端)"]
-        col_x, col_y = st.columns(2)
+        # パースペクティブ補正を実行
+        try:
+            paper_points = np.array(st.session_state.paper_coords, dtype="float32")
+            warped_image_bgr, _ = four_point_transform(
+                st.session_state.original_image, paper_points, TARGET_WIDTH, TARGET_HEIGHT
+            )
+            st.session_state.processed_image = warped_image_bgr
+            st.success("パースペクティブ補正が完了しました。以下の画像が補正後の画像です。")
+        except Exception as e:
+            st.error(f"パースペクティブ補正に失敗しました。ステップ1の座標を再確認してください: {e}")
+            if st.button("← ステップ1に戻る", key="back_to_step1_from_2"):
+                st.session_state.step = 1
+                st.experimental_rerun()
+            return
 
-        for i, label in enumerate(labels):
-            with col_x if i % 2 == 0 else col_y:
-                st.subheader(f"{label}の座標")
-                x_val = st.number_input(
-                    f"{label} X座標 (0-{TARGET_WIDTH})",
-                    min_value=0,
-                    max_value=TARGET_WIDTH,
-                    value=st.session_state.measure_coords[i][0] if st.session_state.measure_coords[i] else 0,
-                    key=f'measure_x_{i}'
-                )
-                y_val = st.number_input(
-                    f"{label} Y座標 (0-{TARGET_HEIGHT})",
-                    min_value=0,
-                    max_value=TARGET_HEIGHT,
-                    value=st.session_state.measure_coords[i][1] if st.session_state.measure_coords[i] else 0,
-                    key=f'measure_y_{i}'
-                )
-                st.session_state.measure_coords[i] = (x_val, y_val)
+        # 座標入力UIの呼び出し
+        measure_labels = ["着丈 (上端)", "着丈 (下端)", "身幅 (左端)", "身幅 (右端)"]
+        coordinate_input_ui(st.session_state.processed_image, 'measure_coords', measure_labels, is_original_image=False)
         
         # 戻るボタン
-        if st.button("← ステップ1に戻る", key="back_to_step1"):
+        if st.button("← 紙の角の指定に戻る", key="back_to_step1_alt"):
             st.session_state.step = 1
             st.experimental_rerun()
 
-        if st.button("採寸結果を表示", key="show_results"):
-            st.session_state.step = 3
-            st.experimental_rerun() # ステップ3へ移行
 
     # --- ステップ 3: 結果の表示 ---
     elif st.session_state.step == 3:
-        st.header("ステップ 3: 採寸結果")
+        st.header("ステップ 3/3: 採寸結果")
         
-        # 測定ポイントをNumpy配列に変換
         measure_points = np.array(st.session_state.measure_coords, dtype="float32")
         
         try:
@@ -211,7 +269,7 @@ def main():
             
             st.info("結果は、カスタム基準（縦51cm、横38cm）と、手動で指定した4点に基づいて計算されています。")
             
-            # --- 結果の視覚化（デバッグ情報として） ---
+            # --- 結果の視覚化 ---
             warped_image_display = st.session_state.processed_image.copy()
             
             # 計測点を描画: [着丈上(青), 着丈下(青), 身幅左(緑), 身幅右(緑)]
@@ -245,11 +303,11 @@ def main():
 
 
         except Exception as e:
-            st.error(f"計測の計算中にエラーが発生しました: {e}")
+            st.error(f"計測の計算中にエラーが発生しました。ステップ2の座標を再確認してください。: {e}")
             st.exception(e)
             
         # 戻るボタン
-        if st.button("← ステップ2に戻る", key="back_to_step2"):
+        if st.button("← ステップ2に戻って再調整する", key="back_to_step2_final"):
             st.session_state.step = 2
             st.experimental_rerun()
 
