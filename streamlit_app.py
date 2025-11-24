@@ -4,7 +4,7 @@ from PIL import Image
 import numpy as np
 import cv2 
 from scipy.spatial import distance as dist
-from . import utils  # ← utils.pyから関数をインポート
+import utils  # ← utils.pyから関数をインポート
 
 # A3用紙の既知の寸法（例: 短辺）をセンチメートルで定義
 # 基準オブジェクトの既知の長さとして利用します
@@ -155,4 +155,5 @@ if uploaded_file is not None:
 # 注意書き
 
 st.info('※このアプリは、A3画用紙の既知の寸法を基準としています。')
+
 
