@@ -8,16 +8,16 @@ import utils  # utils.pyからorder_points関数をインポート
 # =======================================================
 # 📏 【カスタム基準寸法】 (縦 51cm, 横 38cm)
 # =======================================================
-KNOWN_WIDTH_CM = 38.0  # 既知の横幅 (短辺)
-KNOWN_LENGTH_CM = 51.0 # 既知の縦幅 (長辺)
+KNOWN_WIDTH_CM = 38.0  # Known width in cm (shorter side)
+KNOWN_LENGTH_CM = 51.0 # Known length in cm (longer side)
 
-# ユーザーがクリックした座標を保存するためのセッションステート
+# Initialize Session State for measurements
 if 'clicks' not in st.session_state:
     st.session_state.clicks = []
 if 'img_data' not in st.session_state:
-    st.session_state.img_data = None # パースペクティブ補正後の画像データ (RGB形式)
+    st.session_state.img_data = None 
 if 'ppm' not in st.session_state:
-    st.session_state.ppm = None # Pixels Per Metric
+    st.session_state.ppm = None 
 
 # =======================================================
 # 📏 【自動基準検出＆補正ロジック関数】
@@ -26,14 +26,33 @@ if 'ppm' not in st.session_state:
 def process_image_and_get_ppm(image_np, known_width, known_length):
     """
     画像を前処理し、パースペクティブ補正を行い、Pixels Per Metricを計算して返す
-    """
-    # 1. 画像の前処理
-    gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
-    edged = cv2.Canny(blurred, 50, 100)
     
-    edged = cv2.dilate(edged, None, iterations=1)
-    edged = cv2.erode(edged, None, iterations=1)
+    Args:
+        image_np (np.array): RGB形式の画像Numpy配列
+        known_width (float): 基準紙の既知の横幅 (cm)
+        known_length (float): 基準紙の既知の縦幅 (cm)
+
+    Returns:
+        tuple: (補正後のRGB画像Numpy配列, Pixels Per Metric)
+    """
+    # Streamlitから来た画像は通常RGBなので、BGRに変換してOpenCVで処理
+    if len(image_np.shape) == 3 and image_np.shape[2] == 3:
+        image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+    else:
+        # カラー画像でない場合はエラー
+        raise ValueError("画像がRGB形式ではありません。")
+
+    # 1. 画像の前処理
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+    
+    # エッジ検出の閾値を調整 (コントラストの低い画像に対応)
+    edged = cv2.Canny(blurred, 30, 150)
+    
+    # 輪郭を明確にするための膨張・収縮処理
+    kernel = np.ones((3,3), np.uint8)
+    edged = cv2.dilate(edged, kernel, iterations=1)
+    edged = cv2.erode(edged, kernel, iterations=1)
 
     # 2. 輪郭の検出
     contours, _ = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -41,15 +60,20 @@ def process_image_and_get_ppm(image_np, known_width, known_length):
     
     # 3. 基準紙（四角形）の特定
     paper_contour = None
+    # 最小面積の閾値を設定 (画像サイズに応じて調整)
+    min_area_threshold = image_np.shape[0] * image_np.shape[1] * 0.05 # 画像全体の5%以上の面積を持つこと
+    
     for c in contours:
         peri = cv2.arcLength(c, True)
         approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4:
+        # 4つの角を持ち、かつ一定以上の面積を持つものを基準紙として採用
+        if len(approx) == 4 and cv2.contourArea(c) > min_area_threshold:
             paper_contour = approx
             break
             
     if paper_contour is None:
-        raise Exception("基準となる紙（4つの角を持つ物体）を検出できませんでした。撮影環境を確認してください。")
+        # 検出失敗の場合は例外を投げる
+        raise Exception("基準となる紙（4つの角を持つ物体）を検出できませんでした。コントラストを上げるか、明るい場所で撮影してください。")
 
     # 4. パースペクティブ補正のための処理
     pts = paper_contour.reshape(4, 2)
@@ -68,12 +92,12 @@ def process_image_and_get_ppm(image_np, known_width, known_length):
         [0, H_ideal - 1]], dtype="float32")
 
     M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(image_np, M, (W_ideal, H_ideal))
-    
+    warped = cv2.warpPerspective(image_bgr, M, (W_ideal, H_ideal)) # BGR画像に対してワープ変換
+
     # 6. Pixels Per Metric の計算
     pixels_per_metric = W_ideal / known_width 
 
-    # BGRをRGBに変換して保存 (streamlitでの表示用)
+    # BGRをRGBに変換して返す (streamlitでの表示用)
     warped_rgb = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
     
     return warped_rgb, pixels_per_metric
@@ -120,10 +144,9 @@ st.info('**手順：** 1. 画像アップロード -> 2. 「補正開始」 -> 3
 uploaded_file = st.file_uploader("採寸したい服の画像をアップロード", type=['jpg', 'jpeg', 'png'])
 
 if uploaded_file is not None:
-    # 画像をPIL/Numpyでロード
+    # 画像をPIL/Numpyでロード (RGB形式で読み込む)
     image = Image.open(uploaded_file)
     image_np = np.array(image.convert('RGB')) 
-    image_np_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
     
     st.image(image, caption='アップロードされた画像', use_column_width=True)
 
@@ -133,7 +156,7 @@ if uploaded_file is not None:
             try:
                 # 補正後の画像とPPMを取得
                 warped_rgb, pixels_per_metric = process_image_and_get_ppm(
-                    image_np_bgr, KNOWN_WIDTH_CM, KNOWN_LENGTH_CM
+                    image_np, KNOWN_WIDTH_CM, KNOWN_LENGTH_CM
                 )
                 # セッションステートに保存
                 st.session_state.img_data = warped_rgb
@@ -143,6 +166,7 @@ if uploaded_file is not None:
             except Exception as e:
                 st.session_state.img_data = None
                 st.session_state.ppm = None
+                # エラーメッセージを明確に表示
                 st.error(f"補正中にエラーが発生しました: {e}")
 
 # 3. 補正後画像の表示と座標取得（手動入力でシミュレーション）
@@ -159,58 +183,4 @@ if st.session_state.img_data is not None:
     
     # 現在設定されている点を表示
     point_names = ["着丈始点 (P1)", "着丈終点 (P2)", "身幅始点 (P3)", "身幅終点 (P4)"]
-    st.markdown("#### 📍 現在の指定点")
-    for i in range(4):
-        if i < num_clicks:
-            point = st.session_state.clicks[i]
-            st.write(f"**{point_names[i]}:** X={point['x']}, Y={point['y']}")
-        else:
-            st.write(f"**{point_names[i]}:** <未設定>")
-            
-    # 新しいクリック点を追加するUI
-    if num_clicks < 4:
-        st.markdown("---")
-        st.markdown(f"#### 💾 {point_names[num_clicks]} の座標を入力 (残り {4 - num_clicks} 点)")
-        
-        # 画面幅に合わせた入力
-        col_x, col_y = st.columns(2)
-        # 補正後画像サイズ W_ideal=1000, H_ideal=int(1000 * 51/38) = 1342
-        max_x = 1000
-        max_y = int(1000 * KNOWN_LENGTH_CM / KNOWN_WIDTH_CM) # ~1342
-        
-        # value=0で初期値を設定
-        new_x = col_x.number_input("X座標 (Pixels):", min_value=0, max_value=max_x, key='new_x', step=1, value=0)
-        new_y = col_y.number_input("Y座標 (Pixels):", min_value=0, max_value=max_y, key='new_y', step=1, value=0)
-        
-        if st.button('点を追加して保存'):
-            st.session_state.clicks.append({'x': new_x, 'y': new_y})
-            st.experimental_rerun()
-    
-    st.markdown("---")
-    if st.button('全ての指定点をリセット'):
-        st.session_state.clicks = []
-        st.experimental_rerun()
-        
-    # 4. 採寸の実行
-    if num_clicks >= 4:
-        if st.button('3. 採寸実行'):
-            with st.spinner('計算中...'):
-                try:
-                    # 計測ロジックを呼び出す
-                    measurements = calculate_measurements(st.session_state.clicks, st.session_state.ppm)
-                    
-                    # 計測成功時の表示ロジック
-                    st.success('採寸が完了しました！')
-                    st.markdown("### 📐 計測結果 (手動指定)")
-
-                    for key, value in measurements.items():
-                        st.write(f"* **{key}:** {value:.1f} cm")
-                    
-                    st.info("着丈は点1(P1)と点2(P2)の縦の距離、身幅は点3(P3)と点4(P4)の横の距離として計算されています。")
-                    
-                except Exception as e: 
-                    st.error(f"計測中にエラーが発生しました: {e}")
-            
-# 最後の注意書き
-st.markdown("---")
-st.info('※このアプリは、縦51cm、横38cmの紙の既知の寸法を基準としています。')
+    st.
