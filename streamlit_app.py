@@ -6,7 +6,7 @@ import json
 # デバッグ情報を格納するための辞書
 debug_info = {}
 
-# --- ユーティリティ関数（変更なし） ---
+# --- ユーティリティ関数 ---
 
 # 画像をリサイズし、アスペクト比を維持
 def resize_image(image, max_width=800):
@@ -18,57 +18,7 @@ def resize_image(image, max_width=800):
         return resized
     return image
 
-# マニュアル座標入力用のUIを表示
-def display_manual_input(image):
-    st.subheader("手動座標入力")
-    st.warning("自動補正に失敗しました。基準となる紙の4つの角を以下の順序で入力してください。")
-    st.info("画像の左上、右上、右下、左下の順に入力してください。")
-
-    # セッションステートで座標を保持
-    if 'manual_coords' not in st.session_state:
-        st.session_state.manual_coords = [None, None, None, None]
-
-    cols = st.columns(4)
-    labels = ["左上", "右上", "右下", "左下"]
-    
-    # ユーザーが座標を入力するための数値入力フィールド
-    for i, label in enumerate(labels):
-        with cols[i]:
-            # X座標
-            st.session_state.manual_coords[i] = st.number_input(
-                f"{label} X座標 (0-{image.shape[1]})",
-                min_value=0,
-                max_value=image.shape[1],
-                value=st.session_state.manual_coords[i][0] if st.session_state.manual_coords[i] else 0,
-                key=f'x_coord_{i}'
-            )
-            # Y座標
-            st.session_state.manual_coords[i] = (
-                st.session_state.manual_coords[i],
-                st.number_input(
-                    f"{label} Y座標 (0-{image.shape[0]})",
-                    min_value=0,
-                    max_value=image.shape[0],
-                    value=st.session_state.manual_coords[i][1] if st.session_state.manual_coords[i] and isinstance(st.session_state.manual_coords[i], tuple) else 0,
-                    key=f'y_coord_{i}'
-                )
-            )
-
-    # 4点全て入力されたかチェック
-    if all(isinstance(coord, tuple) and len(coord) == 2 for coord in st.session_state.manual_coords):
-        # 4点をNumpy配列に変換
-        manual_points = np.array([
-            st.session_state.manual_coords[0], st.session_state.manual_coords[1],
-            st.session_state.manual_coords[2], st.session_state.manual_coords[3]
-        ], dtype="float32")
-        
-        # 補正開始ボタンの表示
-        if st.button("手動補正を開始"):
-            return manual_points
-    
-    return None
-
-# 画像のパースペクティブ変換（変更なし）
+# 画像のパースペクティブ変換
 def four_point_transform(image, pts, target_width, target_height):
     rect = np.array([
         [0, 0], [target_width - 1, 0],
@@ -79,211 +29,230 @@ def four_point_transform(image, pts, target_width, target_height):
     warped = cv2.warpPerspective(image, M, (target_width, target_height))
     return warped, M
 
-# パースペクティブ補正された画像から服のバウンディングボックスを抽出（変更なし）
-def find_clothing_bounding_box(warped_image):
-    # HSVに変換し、服の色範囲を検出
-    hsv = cv2.cvtColor(warped_image, cv2.COLOR_BGR2HSV)
+# 測定ロジック
+def measure_clothing(measurement_points, target_width, target_height, paper_width_cm, paper_height_cm):
     
-    # ここでは、青色の服を検出するための一般的な範囲を使用します
-    lower_blue = np.array([90, 50, 50])
-    upper_blue = np.array([130, 255, 255])
+    # 補正後の画像サイズ（ピクセル）
+    x_px = measurement_points[:, 0]
+    y_px = measurement_points[:, 1]
     
-    # マスクを作成
-    mask = cv2.inRange(hsv, lower_blue, upper_blue)
+    # ピクセルあたりのセンチメートル数を計算
+    pixels_per_cm_x = target_width / paper_width_cm
+    pixels_per_cm_y = target_height / paper_height_cm
     
-    # モルフォロジー変換でノイズを除去し、領域を結合
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    # 着丈 (Y軸の最大値と最小値の差)
+    # ユーザーが指定した着丈の始まり(0)と終わり(1)
+    height_px = abs(y_px[1] - y_px[0])
     
-    # 輪郭を検出
-    contours, _ = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    if not contours:
-        return None, None
-    
-    # 最大の輪郭を見つける（通常、それが服全体）
-    largest_contour = max(contours, key=cv2.contourArea)
-    
-    # バウンディングボックスを取得
-    x, y, w, h = cv2.boundingRect(largest_contour)
-    
-    # デバッグ情報としてマスクを追加
-    debug_info['binary_mask'] = mask
-    
-    return (x, y, w, h), largest_contour
-
-# 測定ロジック（変更なし）
-def measure_clothing(bounding_box, paper_size_mm, pixels_per_metric):
-    if bounding_box is None:
-        return None
-    
-    x, y, w, h = bounding_box
+    # 身幅 (X軸の最大値と最小値の差)
+    # ユーザーが指定した身幅の始まり(2)と終わり(3)
+    width_px = abs(x_px[3] - x_px[2])
     
     # 実際の服の寸法を計算
-    # 着丈 (y軸方向)
-    height_cm = h / pixels_per_metric 
-    # 身幅 (x軸方向)
-    width_cm = w / pixels_per_metric
+    # 縦方向の計測にはyのスケール、横方向の計測にはxのスケールを使用
+    height_cm = height_px / pixels_per_cm_y
+    width_cm = width_px / pixels_per_cm_x
     
-    return height_cm, width_cm
+    return height_cm, width_cm, pixels_per_cm_x, pixels_per_cm_y
 
-# 4つの角を自動検出する（修正なし）
-def find_quadrilateral(image):
-    # 画像をグレースケールに変換し、ガウシアンブラーを適用
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    
-    # エッジ検出
-    # Canny検出器を使用する前に、OpenCVが最も成功しやすいように画像を調整する
-    # ユーザーのPhotoshopでの調整により、この部分の検出精度が大きく左右される
-    edged = cv2.Canny(blurred, 50, 200)
+# --- Streamlit UIと状態管理 ---
 
-    # 輪郭を見つける
-    contours, _ = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+# 基準となる紙のサイズ（縦51cm、横38cm - ユーザーのカスタムサイズ）
+PAPER_HEIGHT_CM = 51.0
+PAPER_WIDTH_CM = 38.0
+
+# 補正後のターゲットサイズをピクセルで定義（アスペクト比を維持）
+TARGET_WIDTH = 800
+TARGET_HEIGHT = int(TARGET_WIDTH * (PAPER_HEIGHT_CM / PAPER_WIDTH_CM))
+
+def init_session_state():
+    if 'step' not in st.session_state:
+        st.session_state.step = 1
+    if 'processed_image' not in st.session_state:
+        st.session_state.processed_image = None
+    if 'original_image' not in st.session_state:
+        st.session_state.original_image = None
+    if 'paper_coords' not in st.session_state:
+        st.session_state.paper_coords = [None] * 4 # [左上, 右上, 右下, 左下]
+    if 'measure_coords' not in st.session_state:
+        st.session_state.measure_coords = [None] * 4 # [着丈上, 着丈下, 身幅左, 身幅右]
+
+def main():
+    init_session_state()
+
+    st.title("📐 服のカスタム採寸アプリ")
+    st.markdown("---")
     
-    # 輪郭を面積でソートし、最も大きなものを選択
-    contours = sorted(contours, key = cv2.contourArea, reverse = True)
-    
-    # 4つの頂点を持つ四角形を見つける
-    for c in contours:
-        # 輪郭の周囲長を計算
-        peri = cv2.arcLength(c, True)
-        # 輪郭を近似し、頂点数を確認
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        
-        # 4つの頂点があり、閉じた形状であれば、それが基準の紙と仮定
-        if len(approx) == 4:
-            # 頂点の順序を (左上, 右上, 右下, 左下) に並べ替える
-            points = approx.reshape(4, 2)
+    # ファイルアップローダー
+    uploaded_file = st.file_uploader("ステップ 0: 画像をアップロード", type=["jpg", "jpeg", "png"])
+
+    if uploaded_file is not None:
+        if st.session_state.original_image is None or st.session_state.uploaded_file_name != uploaded_file.name:
+            # 新しいファイルがアップロードされた場合、状態をリセット
+            st.session_state.step = 1
+            st.session_state.uploaded_file_name = uploaded_file.name
             
-            # 頂点を正しい順序に並べ替えるヘルパー関数
-            def order_points(pts):
-                # 4点を初期化
-                rect = np.zeros((4, 2), dtype = "float32")
+            file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+            original_image_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            st.session_state.original_image = resize_image(original_image_bgr) # 処理用にリサイズ
 
-                # 左上 (最小の合計) と右下 (最大の合計)
-                s = pts.sum(axis = 1)
-                rect[0] = pts[np.argmin(s)] # 左上
-                rect[2] = pts[np.argmax(s)] # 右下
-
-                # 右上 (最小の差) と左下 (最大の差)
-                diff = np.diff(pts, axis = 1)
-                rect[1] = pts[np.argmin(diff)] # 右上
-                rect[3] = pts[np.argmax(diff)] # 左下
-
-                return rect
-            
-            return order_points(points)
-
-    return None
-
-# 採寸プロセス全体を制御する関数
-def process_measurement(image):
-    
-    # 基準となる紙のサイズ（縦51cm、横38cm - ユーザーのカスタムサイズ）
-    PAPER_HEIGHT_CM = 51.0
-    PAPER_WIDTH_CM = 38.0
-    
-    # OpenCVが処理しやすいように画像をリサイズ（ユーザーには見えない）
-    processed_image = resize_image(image)
-
-    # 1. 基準となる紙の4つの角を検出
-    st.info("ステップ 1/3: 基準となる紙の4つの角を自動検出中...")
-    
-    # --- 検出に失敗した場合の処理を追加 ---
-    quad = find_quadrilateral(processed_image)
-
-    if quad is None:
-        st.error("補正中にエラーが発生しました。基準となる紙（4つの角を持つ物体）を検出できませんでした。")
-        st.warning("手動で座標を入力するか、画像（特に境界線）をさらに明確にして再試行してください。")
-        
-        # 手動入力UIを表示し、結果を取得
-        manual_points = display_manual_input(processed_image)
-
-        if manual_points is None:
-            return # 手動入力が完了していない場合は終了
-
-        quad = manual_points # 手動入力された座標を使用
-
-    # 2. パースペクティブ変換を実行
-    st.info("ステップ 2/3: パースペクティブ補正を実行中...")
-    
-    # 補正後のターゲットサイズをピクセルで定義（アスペクト比を維持）
-    # ターゲットの幅と高さを紙の比率に合わせる
-    # 服の採寸には縦長の比率で十分なため、ここでは縦長に調整
-    TARGET_WIDTH = 800
-    TARGET_HEIGHT = int(TARGET_WIDTH * (PAPER_HEIGHT_CM / PAPER_WIDTH_CM))
-    
-    # 補正後の画像を取得
-    warped_image_bgr, M = four_point_transform(processed_image, quad, TARGET_WIDTH, TARGET_HEIGHT)
-
-    # 3. 採寸と結果の表示
-    st.info("ステップ 3/3: 服の寸法を測定中...")
-    
-    # ピクセルあたりのセンチメートル数を計算 (例: 800px / 38cm)
-    pixels_per_cm = TARGET_WIDTH / PAPER_WIDTH_CM
-    
-    # 服のバウンディングボックスを見つける
-    bounding_box, largest_contour = find_clothing_bounding_box(warped_image_bgr)
-    
-    # 測定結果を取得
-    measurement_results = measure_clothing(bounding_box, (PAPER_HEIGHT_CM, PAPER_WIDTH_CM), pixels_per_cm)
-
-    # 測定結果の表示
-    st.success("採寸が完了しました！")
-    
-    if measurement_results:
-        height_cm, width_cm = measurement_results
-        
-        st.subheader("📐 計測結果 (カスタム基準)")
-        st.markdown(f"**着丈 (推定):** {height_cm:.1f} cm")
-        st.markdown(f"**身幅 (推定):** {width_cm:.1f} cm")
-        
-        st.info("計測は服の外枠 (バウンディングボックス) に基づいています。")
-
-    else:
-        st.error("服の検出に失敗しました。服が背景（紙）と同じ色ではないか確認してください。")
+    if st.session_state.original_image is None:
+        st.info("縦51cm、横38cmの紙の上に服を置いて撮影した画像をアップロードしてください。")
         return
 
-    # --- デバッグ情報（結果の視覚化）---
-    
-    # 補正された画像（デバッグ用）
-    warped_image_display = warped_image_bgr.copy()
-    
-    # 服のバウンディングボックスを描画
-    if bounding_box:
-        x, y, w, h = bounding_box
-        # 服の外枠を赤色で表示
-        cv2.rectangle(warped_image_display, (x, y), (x + w, y + h), (0, 0, 255), 5)
+    # --- ステップ 1: 紙の角の指定とパースペクティブ補正 ---
+    if st.session_state.step == 1:
+        st.header("ステップ 1: 基準となる紙の4つの角を入力")
+        st.warning("紙の角の正確な**X, Y座標**を入力してください。座標はPhotoshopなどのツールで確認できます。")
+        st.info(f"アップロードされた画像サイズ: {st.session_state.original_image.shape[1]} x {st.session_state.original_image.shape[0]} (リサイズ後)")
         
-    st.subheader("🐛 デバッグ情報")
-    st.image(warped_image_display, channels="BGR", caption="パースペクティブ補正後の画像と推定バウンディングボックス")
-    
-    # 輪郭マスクの表示
-    if 'binary_mask' in debug_info:
-        st.image(debug_info['binary_mask'], caption="閾値処理後の画像（服が白く表示されているか確認）", use_column_width=True)
-        st.markdown(f"Pixels Per Metric (1cmあたり): {pixels_per_cm:.2f} pixels")
+        st.image(st.session_state.original_image, channels="BGR", caption="元の画像（この画像を参考に座標を入力）", use_column_width=True)
+
+        labels = ["左上", "右上", "右下", "左下"]
+        col_x, col_y = st.columns(2)
         
-    st.markdown(f"※このアプリは、縦{PAPER_HEIGHT_CM}cm、横{PAPER_WIDTH_CM}cmの紙の既知の寸法を基準としています。")
+        for i, label in enumerate(labels):
+            with col_x if i % 2 == 0 else col_y:
+                # ユーザーが座標を入力するための数値入力フィールド
+                st.subheader(f"{label}の座標")
+                x_val = st.number_input(
+                    f"{label} X座標",
+                    min_value=0,
+                    max_value=st.session_state.original_image.shape[1],
+                    value=st.session_state.paper_coords[i][0] if st.session_state.paper_coords[i] else 0,
+                    key=f'paper_x_{i}'
+                )
+                y_val = st.number_input(
+                    f"{label} Y座標",
+                    min_value=0,
+                    max_value=st.session_state.original_image.shape[0],
+                    value=st.session_state.paper_coords[i][1] if st.session_state.paper_coords[i] else 0,
+                    key=f'paper_y_{i}'
+                )
+                st.session_state.paper_coords[i] = (x_val, y_val)
 
 
-# --- Streamlit UI（変更なし） ---
+        if st.button("画像を補正し、ステップ2へ進む", key="go_to_step2"):
+            try:
+                # 4点をNumpy配列に変換
+                paper_points = np.array(st.session_state.paper_coords, dtype="float32")
+                
+                # 補正を実行
+                warped_image_bgr, _ = four_point_transform(
+                    st.session_state.original_image, paper_points, TARGET_WIDTH, TARGET_HEIGHT
+                )
+                
+                st.session_state.processed_image = warped_image_bgr
+                st.session_state.step = 2
+                st.experimental_rerun() # ステップ2へ移行
 
-st.title("👕 服の自動採寸アプリ (カスタム基準)")
-st.markdown(f"服を縦51cm、横38cmの紙に置いて撮影した画像をアップロードしてください。")
+            except Exception as e:
+                st.error(f"パースペクティブ補正に失敗しました。座標入力が間違っている可能性があります: {e}")
+                st.exception(e)
 
-uploaded_file = st.file_uploader("ファイルをここにドラッグアンドドロップしてください", type=["jpg", "jpeg", "png"])
+    # --- ステップ 2: 着丈・身幅の採寸点を指定 ---
+    elif st.session_state.step == 2:
+        st.header("ステップ 2: 着丈・身幅の計測点を入力")
+        st.info("補正後の画像を見ながら、服の採寸に必要な4点の正確なX, Y座標を入力してください。")
+        st.warning(f"補正後の画像サイズ: {TARGET_WIDTH} x {TARGET_HEIGHT}。座標はこの範囲内で入力してください。")
+        
+        # 補正後の画像を表示
+        st.image(st.session_state.processed_image, channels="BGR", 
+                 caption="補正後の画像（この画像を参考に座標を入力）", use_column_width=True)
 
-if uploaded_file is not None:
-    # ファイルの読み込み
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    
-    st.image(image, channels="BGR", caption="アップロードされた画像")
+        labels = ["着丈 (上端)", "着丈 (下端)", "身幅 (左端)", "身幅 (右端)"]
+        col_x, col_y = st.columns(2)
 
-    if st.button("採寸開始"):
+        for i, label in enumerate(labels):
+            with col_x if i % 2 == 0 else col_y:
+                st.subheader(f"{label}の座標")
+                x_val = st.number_input(
+                    f"{label} X座標 (0-{TARGET_WIDTH})",
+                    min_value=0,
+                    max_value=TARGET_WIDTH,
+                    value=st.session_state.measure_coords[i][0] if st.session_state.measure_coords[i] else 0,
+                    key=f'measure_x_{i}'
+                )
+                y_val = st.number_input(
+                    f"{label} Y座標 (0-{TARGET_HEIGHT})",
+                    min_value=0,
+                    max_value=TARGET_HEIGHT,
+                    value=st.session_state.measure_coords[i][1] if st.session_state.measure_coords[i] else 0,
+                    key=f'measure_y_{i}'
+                )
+                st.session_state.measure_coords[i] = (x_val, y_val)
+        
+        # 戻るボタン
+        if st.button("← ステップ1に戻る", key="back_to_step1"):
+            st.session_state.step = 1
+            st.experimental_rerun()
+
+        if st.button("採寸結果を表示", key="show_results"):
+            st.session_state.step = 3
+            st.experimental_rerun() # ステップ3へ移行
+
+    # --- ステップ 3: 結果の表示 ---
+    elif st.session_state.step == 3:
+        st.header("ステップ 3: 採寸結果")
+        
+        # 測定ポイントをNumpy配列に変換
+        measure_points = np.array(st.session_state.measure_coords, dtype="float32")
+        
         try:
-            process_measurement(image)
+            height_cm, width_cm, pixels_per_cm_x, pixels_per_cm_y = measure_clothing(
+                measure_points, TARGET_WIDTH, TARGET_HEIGHT, PAPER_WIDTH_CM, PAPER_HEIGHT_CM
+            )
+
+            st.success("採寸が完了しました！")
+            
+            st.subheader("📐 計測結果")
+            st.markdown(f"**着丈 (推定):** **{height_cm:.1f} cm**")
+            st.markdown(f"**身幅 (推定):** **{width_cm:.1f} cm**")
+            
+            st.info("結果は、カスタム基準（縦51cm、横38cm）と、手動で指定した4点に基づいて計算されています。")
+            
+            # --- 結果の視覚化（デバッグ情報として） ---
+            warped_image_display = st.session_state.processed_image.copy()
+            
+            # 計測点を描画: [着丈上(青), 着丈下(青), 身幅左(緑), 身幅右(緑)]
+            colors = [(255, 0, 0), (255, 0, 0), (0, 255, 0), (0, 255, 0)] # 青, 青, 緑, 緑
+            labels_draw = ["着丈上", "着丈下", "身幅左", "身幅右"]
+
+            for i, (x, y) in enumerate(st.session_state.measure_coords):
+                x_int, y_int = int(x), int(y)
+                cv2.circle(warped_image_display, (x_int, y_int), 10, colors[i], -1)
+                cv2.putText(warped_image_display, labels_draw[i], (x_int + 15, y_int), cv2.FONT_HERSHEY_SIMPLEX, 0.7, colors[i], 2)
+
+            # 着丈の線
+            cv2.line(warped_image_display, 
+                     (int(st.session_state.measure_coords[0][0]), int(st.session_state.measure_coords[0][1])), 
+                     (int(st.session_state.measure_coords[1][0]), int(st.session_state.measure_coords[1][1])), 
+                     (255, 0, 0), 3) # 青線
+            
+            # 身幅の線
+            cv2.line(warped_image_display, 
+                     (int(st.session_state.measure_coords[2][0]), int(st.session_state.measure_coords[2][1])), 
+                     (int(st.session_state.measure_coords[3][0]), int(st.session_state.measure_coords[3][1])), 
+                     (0, 255, 0), 3) # 緑線
+
+
+            st.subheader("🐛 計測点と結果の確認")
+            st.image(warped_image_display, channels="BGR", caption="計測点を描画した補正後の画像", use_column_width=True)
+            
+            st.markdown(f"**詳細スケール情報:**")
+            st.markdown(f"・横方向 (1cmあたり): {pixels_per_cm_x:.2f} pixels")
+            st.markdown(f"・縦方向 (1cmあたり): {pixels_per_cm_y:.2f} pixels")
+
+
         except Exception as e:
-            st.error(f"計測中にエラーが発生しました。コードを確認してください: {e}")
+            st.error(f"計測の計算中にエラーが発生しました: {e}")
+            st.exception(e)
+            
+        # 戻るボタン
+        if st.button("← ステップ2に戻る", key="back_to_step2"):
+            st.session_state.step = 2
+            st.experimental_rerun()
+
+# アプリケーションの実行
+if __name__ == '__main__':
+    main()
