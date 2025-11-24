@@ -143,47 +143,33 @@ if st.button('採寸開始'):
             # 採寸ロジックを呼び出す
             measurements = measure_clothing(image_np, KNOWN_WIDTH_CM)
             
+            # 計測成功時の表示ロジック
             st.success('採寸が完了しました！')
-            
-            # 結果を表示
             st.markdown("### 📐 計測結果 (A3基準)")
 
-            # 備考を格納するための変数を用意 (存在すれば)
+            # 結果表示ループ
             remarks = measurements.get("備考", None)
             
             for key, value in measurements.items():
-                # '備考'キーは数値フォーマットの対象外とする
                 if key == "備考":
                     continue
-                
-                # ここで数値のみを .1f でフォーマット
                 st.write(f"* **{key}:** {value:.1f} cm")
             
-            # 備考があれば別途表示する
-    if remarks:
-        st.info(remarks)
-
-    # 🚨 ここにデバッグ用のコードを追加 🚨
-    debug_img = measurements.get("debug_image", None)
-    if debug_img is not None:
-        st.header("🐛 デバッグ情報")
-        # 閾値画像をそのまま表示
-        st.image(debug_img, caption="閾値処理後の画像（服が白く表示されているか確認）", use_column_width=True)
-        # Pixels Per Metric の値も表示
-        st.write(f"Pixels Per Metric (1cmあたり): {measurements.get('pixels_per_metric', 'N/A'):.2f} pixels")
+            if remarks:
+                st.info(remarks)
         
-        # 🚨 ここに except ブロックを追加します 🚨
-        except Exception as e:
-            # エラーが発生した場合の表示
+        # 🚨 ここで try ブロックを閉じる except を追加 🚨
+        except Exception as e: 
+            # tryブロック内でエラーが発生したら、ここでキャッチする
             st.error(f"計測中にエラーが発生しました。コードを確認してください: {e}")
             
-# st.info('※このアプリは、A3画用紙の既知の寸法を基準としています。') は if ブロックの外側にあります
-# 注意書き
-
+        # 🚨 デバッグ表示は try/except の「後」に続ける 🚨
+        # try/except と同じインデントレベル (レベル 3) に戻す
+        debug_img = measurements.get("debug_image", None)
+        if debug_img is not None:
+            st.header("🐛 デバッグ情報")
+            st.image(debug_img, caption="閾値処理後の画像（服が白く表示されているか確認）", use_column_width=True)
+            st.write(f"Pixels Per Metric (1cmあたり): {measurements.get('pixels_per_metric', 'N/A'):.2f} pixels")
+            
+# st.info(...) は if ブロックの外側 (レベル 1) にある
 st.info('※このアプリは、A3画用紙の既知の寸法を基準としています。')
-
-
-
-
-
-
