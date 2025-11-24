@@ -26,14 +26,6 @@ if 'ppm' not in st.session_state:
 def process_image_and_get_ppm(image_np, known_width, known_length):
     """
     画像を前処理し、パースペクティブ補正を行い、Pixels Per Metricを計算して返す
-    
-    Args:
-        image_np (np.array): RGB形式の画像Numpy配列
-        known_width (float): 基準紙の既知の横幅 (cm)
-        known_length (float): 基準紙の既知の縦幅 (cm)
-
-    Returns:
-        tuple: (補正後のRGB画像Numpy配列, Pixels Per Metric)
     """
     # Streamlitから来た画像は通常RGBなので、BGRに変換してOpenCVで処理
     if len(image_np.shape) == 3 and image_np.shape[2] == 3:
@@ -46,8 +38,13 @@ def process_image_and_get_ppm(image_np, known_width, known_length):
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (7, 7), 0)
     
-    # エッジ検出の閾値を調整 (コントラストの低い画像に対応)
-    edged = cv2.Canny(blurred, 30, 150)
+    # 【修正点1】ノイズ除去強化：メディアンフィルタを追加
+    # 周囲のノイズ（畳の模様など）をさらに除去し、エッジ検出を安定させる
+    blurred = cv2.medianBlur(blurred, 5) 
+    
+    # 【修正点2】エッジ検出の閾値を調整
+    # コントラストが低い画像に対応するため、下限閾値を少し下げて試みる
+    edged = cv2.Canny(blurred, 20, 150)
     
     # 輪郭を明確にするための膨張・収縮処理
     kernel = np.ones((3,3), np.uint8)
@@ -60,8 +57,7 @@ def process_image_and_get_ppm(image_np, known_width, known_length):
     
     # 3. 基準紙（四角形）の特定
     paper_contour = None
-    # 最小面積の閾値を設定 (画像サイズに応じて調整)
-    min_area_threshold = image_np.shape[0] * image_np.shape[1] * 0.05 # 画像全体の5%以上の面積を持つこと
+    min_area_threshold = image_np.shape[0] * image_np.shape[1] * 0.05 
     
     for c in contours:
         peri = cv2.arcLength(c, True)
@@ -183,6 +179,58 @@ if st.session_state.img_data is not None:
     
     # 現在設定されている点を表示
     point_names = ["着丈始点 (P1)", "着丈終点 (P2)", "身幅始点 (P3)", "身幅終点 (P4)"]
-    # 最後の注意書き
+    st.markdown("#### 📍 現在の指定点")
+    for i in range(4):
+        if i < num_clicks:
+            point = st.session_state.clicks[i]
+            st.write(f"**{point_names[i]}:** X={point['x']}, Y={point['y']}")
+        else:
+            st.write(f"**{point_names[i]}:** <未設定>")
+            
+    # 新しいクリック点を追加するUI
+    if num_clicks < 4:
+        st.markdown("---")
+        st.markdown(f"#### 💾 {point_names[num_clicks]} の座標を入力 (残り {4 - num_clicks} 点)")
+        
+        # 画面幅に合わせた入力
+        col_x, col_y = st.columns(2)
+        # 補正後画像サイズ W_ideal=1000, H_ideal=int(1000 * 51/38) = 1342
+        max_x = 1000
+        max_y = int(1000 * KNOWN_LENGTH_CM / KNOWN_WIDTH_CM) 
+        
+        # value=0で初期値を設定
+        new_x = col_x.number_input("X座標 (Pixels):", min_value=0, max_value=max_x, key='new_x', step=1, value=0)
+        new_y = col_y.number_input("Y座標 (Pixels):", min_value=0, max_value=max_y, key='new_y', step=1, value=0)
+        
+        if st.button('点を追加して保存'):
+            st.session_state.clicks.append({'x': new_x, 'y': new_y})
+            st.experimental_rerun()
+    
+    st.markdown("---")
+    if st.button('全ての指定点をリセット'):
+        st.session_state.clicks = []
+        st.experimental_rerun()
+        
+    # 4. 採寸の実行
+    if num_clicks >= 4:
+        if st.button('3. 採寸実行'):
+            with st.spinner('計算中...'):
+                try:
+                    # 計測ロジックを呼び出す
+                    measurements = calculate_measurements(st.session_state.clicks, st.session_state.ppm)
+                    
+                    # 計測成功時の表示ロジック
+                    st.success('採寸が完了しました！')
+                    st.markdown("### 📐 計測結果 (手動指定)")
+
+                    for key, value in measurements.items():
+                        st.write(f"* **{key}:** {value:.1f} cm")
+                    
+                    st.info("着丈は点1(P1)と点2(P2)の縦の距離、身幅は点3(P3)と点4(P4)の横の距離として計算されています。")
+                    
+                except Exception as e: 
+                    st.error(f"計測中にエラーが発生しました: {e}")
+            
+# 最後の注意書き
 st.markdown("---")
 st.info('※このアプリは、縦51cm、横38cmの紙の既知の寸法を基準としています。')
