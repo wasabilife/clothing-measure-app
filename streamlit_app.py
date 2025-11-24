@@ -5,8 +5,12 @@ import cv2
 from scipy.spatial import distance as dist
 import utils  # utils.pyから関数をインポート
 
-# A3用紙の既知の寸法（例: 短辺）をセンチメートルで定義
-KNOWN_WIDTH_CM = 29.7
+# =======================================================
+# 📏 【カスタム基準寸法】 (縦 51cm, 横 38cm)
+# =======================================================
+# 基準オブジェクトの既知の寸法をセンチメートルで定義
+KNOWN_WIDTH_CM = 38.0  # 既知の横幅 (短辺)
+KNOWN_LENGTH_CM = 51.0 # 既知の縦幅 (長辺)
 
 # =======================================================
 # 📏 【採寸ロジック関数】 A3用紙を基準に計算する
@@ -47,26 +51,31 @@ def measure_clothing(image_np, known_width):
     if paper_contour is None:
         raise Exception("A3画用紙（4つの角を持つ物体）を検出できませんでした。撮影環境を確認してください。")
 
-    # 4. パースペクティブ補正のための処理
+   # 4. パースペクティブ補正のための処理
     pts = paper_contour.reshape(4, 2)
+    # 検出した4つの角を utils.py の関数で順序付け
     rect = utils.order_points(pts) 
     (tl, tr, br, bl) = rect
 
-    ratio_a3 = 420.0 / 297.0 
-    W_ideal = 1000  # 補正後の画像幅の仮設定
-    H_ideal = int(W_ideal * ratio_a3)
+    # 補正後の画像の理想的なサイズを決定 (縦51cm:横38cmの比率を維持)
+    ratio_custom = known_length / known_width
+    W_ideal = 1000  # 補正後の画像幅の仮設定（ピクセル数）
+    H_ideal = int(W_ideal * ratio_custom)
 
     # 5. ワープ変換（パースペクティブ補正）
+    # 補正後のターゲット座標 (理想的な長方形)
     dst = np.array([
         [0, 0],
         [W_ideal - 1, 0],
         [W_ideal - 1, H_ideal - 1],
         [0, H_ideal - 1]], dtype="float32")
 
+    # 変換行列を取得し、画像をワープ変換
     M = cv2.getPerspectiveTransform(rect, dst)
     warped = cv2.warpPerspective(image_np, M, (W_ideal, H_ideal))
     
     # 6. Pixels Per Metric の計算
+    # 補正後の短辺のピクセル数 (W_ideal) と実際の長さ (KNOWN_WIDTH_CM = 38.0cm) から計算
     pixels_per_metric = W_ideal / known_width 
     
     # =======================================================
@@ -75,9 +84,10 @@ def measure_clothing(image_np, known_width):
     
     warped_gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
     
-    # 閾値処理: 服の輪郭検出の鍵となる部分。100から80に下げて、暗い服の検出を試みる
-    # THRESH_BINARY_INV で、服の部分が白 (255) になるように反転させる
-    _, thresh = cv2.threshold(warped_gray, 80, 255, cv2.THRESH_BINARY_INV) 
+    # 閾値処理: 黒い紙の上に明るい色の服を置いていることを想定し、THRESH_BINARYを使用
+    # 明るいピクセル（服）を白 (255) に、暗いピクセル（背景）を黒 (0) にする
+    # 閾値 100 は、画像内の暗い部分と明るい部分の境界を決定します
+    _, thresh = cv2.threshold(warped_gray, 100, 255, cv2.THRESH_BINARY)
 
     # 再度輪郭を検出
     cnts, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -109,8 +119,8 @@ def measure_clothing(image_np, known_width):
 # 📱 Streamlit UI 部分
 # =======================================================
 
-st.title('👕 服の自動採寸アプリ (A3基準)')
-st.subheader('服をA3画用紙に置いて撮影した画像をアップロードしてください。')
+st.title('👕 服の自動採寸アプリ (カスタム基準)')
+st.subheader('服を縦51cm、横38cmの紙に置いて撮影した画像をアップロードしてください。')
 
 # ユーザーからのファイルアップロードを許可
 uploaded_file = st.file_uploader("採寸したい服の画像をアップロード", type=['jpg', 'jpeg', 'png'])
@@ -138,12 +148,13 @@ if st.button('採寸開始'):
             measurements = {} # measurements を try ブロックの外で初期化
             try:
                 # 採寸ロジックを呼び出す
-                measurements = measure_clothing(image_np, KNOWN_WIDTH_CM)
+                # KNOWN_LENGTH_CM (51.0) を引数に追加
+                measurements = measure_clothing(image_np, KNOWN_WIDTH_CM, KNOWN_LENGTH_CM)
                 
                 # 計測成功時の表示ロジック
                 st.success('採寸が完了しました！')
-                st.markdown("### 📐 計測結果 (A3基準)")
-
+                st.markdown("### 📐 計測結果 (カスタム基準)")
+                # ... (この後の結果表示ロジックは変更なし)
                 # 結果表示ループ
                 remarks = measurements.get("備考", None)
                 
@@ -180,4 +191,5 @@ if st.button('採寸開始'):
                     st.write(f"Pixels Per Metric (1cmあたり): {debug_ppm}")
             
 # st.info(...) は if ブロックの外側にある
-st.info('※このアプリは、A3画用紙の既知の寸法を基準としています。')
+st.info('※このアプリは、縦51cm、横38cmの紙の既知の寸法を基準としています。コントラストを上げるため、服とは逆の色の紙（例：黒い紙）の使用を推奨します。')
+
