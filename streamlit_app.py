@@ -183,4 +183,6 @@ if st.session_state.img_data is not None:
     
     # 現在設定されている点を表示
     point_names = ["着丈始点 (P1)", "着丈終点 (P2)", "身幅始点 (P3)", "身幅終点 (P4)"]
-    st.
+    # 最後の注意書き
+st.markdown("---")
+st.info('※このアプリは、縦51cm、横38cmの紙の既知の寸法を基準としています。')
