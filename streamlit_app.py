@@ -77,18 +77,39 @@ def measure_clothing(image_np, known_width):
     # 補正後の短辺のピクセル数 (W_ideal) と実際の長さ (KNOWN_WIDTH_CM = 29.7cm) から計算
     pixels_per_metric = W_ideal / known_width 
     
-    # 7. 服の寸法計測 (服の輪郭検出)
-    # ここからは、warped (補正済み画像) 上で服の輪郭を検出し、
-    # 測定点間のピクセル距離を測り、pixels_per_metric で割るロジックが必要です。
+   # =======================================================
+    # 7. 服の寸法計測（バウンディングボックスによる簡易計測）
+    # =======================================================
     
-    # ⚠️ 現時点では、デプロイテストと成功を確実にするため、ダミーの結果を返します
-    #    この段階で、画像が歪み補正されているかを目視確認してください。
+    # 補正後の画像をグレースケールにし、服を際立たせる
+    warped_gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
     
+    # 閾値処理：A3の白と服の黒を分離する (ここではしきい値100を使用。色によって調整が必要)
+    # THRESH_BINARY_INV で、服の部分が白 (255) になるように反転させる
+    _, thresh = cv2.threshold(warped_gray, 100, 255, cv2.THRESH_BINARY_INV) 
+
+    # 再度輪郭を検出
+    cnts, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if not cnts:
+        # 服の輪郭が見つからない場合のエラー
+        raise Exception("補正後の画像から服の輪郭を検出できませんでした。服が白すぎるか、A3用紙とのコントラストが不足しています。")
+
+    # 最大の輪郭（服）を抽出
+    c = max(cnts, key=cv2.contourArea)
+
+    # 最小外接矩形を取得 (x, y, 幅w, 高さh をピクセルで取得)
+    x, y, w_pixels, h_pixels = cv2.boundingRect(c)
+
+    # Pixels Per Metric を使ってCMに変換
+    width_cm = w_pixels / pixels_per_metric
+    length_cm = h_pixels / pixels_per_metric
+
+    # 結果を返す
     return {
-        "着丈": f"約{H_ideal / pixels_per_metric:.1f} (補正後の長さ)",
-        "身幅": 55.0,
-        "肩幅": 48.0,
-        "袖丈": 61.2
+        "**着丈 (推定)**": round(length_cm, 1),
+        "**身幅 (推定)**": round(width_cm, 1),
+        "備考": "計測は服の外枠（バウンディングボックス）に基づいています。より詳細な計測には、追加の画像処理が必要です。"
     }
     
 # =======================================================
@@ -134,3 +155,4 @@ if uploaded_file is not None:
 # 注意書き
 
 st.info('※このアプリは、A3画用紙の既知の寸法を基準としています。')
+
