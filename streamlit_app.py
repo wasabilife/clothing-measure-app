@@ -105,11 +105,13 @@ def measure_clothing(image_np, known_width):
     width_cm = w_pixels / pixels_per_metric
     length_cm = h_pixels / pixels_per_metric
 
-    # 結果を返す
+    # 輪郭の検出と計測ロジックは残し、ここでは処理後の画像と Pixels Per Metric を返す
     return {
-        "**着丈 (推定)**": length_cm, # 文字列ではなく、計算された数値 (length_cm) をそのまま返す
-        "**身幅 (推定)**": width_cm,  # 文字列ではなく、計算された数値 (width_cm) をそのまま返す
-        "備考": "計測は服の外枠（バウンディングボックス）に基づいています。" # 備考は数値ではないので削除するか、別途処理が必要
+        "**着丈 (推定)**": length_cm,
+        "**身幅 (推定)**": width_cm,
+        "備考": "計測は服の外枠（バウンディングボックス）に基づいています。",
+        "debug_image": thresh,  # ← デバッグ用の閾値画像を辞書に追加
+        "pixels_per_metric": pixels_per_metric # ← デバッグ用の値も追加
     }
     
 # =======================================================
@@ -158,8 +160,17 @@ if st.button('採寸開始'):
                 st.write(f"* **{key}:** {value:.1f} cm")
             
             # 備考があれば別途表示する
-            if remarks:
-                st.info(remarks)
+    if remarks:
+        st.info(remarks)
+
+    # 🚨 ここにデバッグ用のコードを追加 🚨
+    debug_img = measurements.get("debug_image", None)
+    if debug_img is not None:
+        st.header("🐛 デバッグ情報")
+        # 閾値画像をそのまま表示
+        st.image(debug_img, caption="閾値処理後の画像（服が白く表示されているか確認）", use_column_width=True)
+        # Pixels Per Metric の値も表示
+        st.write(f"Pixels Per Metric (1cmあたり): {measurements.get('pixels_per_metric', 'N/A'):.2f} pixels")
         
         # 🚨 ここに except ブロックを追加します 🚨
         except Exception as e:
@@ -170,6 +181,7 @@ if st.button('採寸開始'):
 # 注意書き
 
 st.info('※このアプリは、A3画用紙の既知の寸法を基準としています。')
+
 
 
 
